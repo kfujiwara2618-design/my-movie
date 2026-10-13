@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>MindAR MP4動画再生（常時表示・継続再生）</title>
+  <title>MindAR MP4動画再生</title>
   <style>
     body {
       margin: 0;
@@ -54,7 +54,7 @@
 
     <!-- マーカーを認識したときに表示されるターゲット -->
     <a-entity id="targetEntity" mindar-image-target="targetIndex: 0">
-      <!-- 動画を表示する板 -->
+      <!-- 動画を表示する板 (16:9のアスペクト比の例: width=1, height=0.5625) -->
       <a-plane 
         id="videoPlane" 
         src="#vid" 
@@ -72,9 +72,6 @@
     const sceneEl = document.querySelector('a-scene');
     const videoPlane = document.querySelector('#videoPlane');
     const videoEl = document.querySelector('#vid');
-    const targetEntity = document.querySelector('#targetEntity');
-
-    let isAttached = false; // 空間固定を一度だけ実行するためのフラグ
 
     // カメラ起動・エラーの判定
     sceneEl.addEventListener("arReady", () => {
@@ -86,32 +83,23 @@
       statusEl.textContent = "エラー: targets.mind の読み込み失敗";
       statusEl.className = "error";
     });
+
+    const targetEntity = document.querySelector('#targetEntity');
     
     // マーカーを検出したとき
     targetEntity.addEventListener('targetFound', () => {
-      statusEl.textContent = "認識成功！動画再生中（マーカーを外しても継続します）";
+      statusEl.textContent = "認識成功！動画再生中";
       statusEl.className = 'success';
-
-      // 初回認識時に、動画の板をマーカーの管理から安全に切り離して空間に固定する
-      if (!isAttached && videoPlane.object3D) {
-        isAttached = true;
-        // DOMは壊さず、内部の3D空間の所属だけをシーン直下に安全に付け替える
-        sceneEl.object3D.attach(videoPlane.object3D);
-      }
-
-      // 動画の再生
       videoEl.play().catch(error => {
         console.log("自動再生がブロックされました:", error);
       });
     });
 
-    // マーカーを見失ったとき（動画は止めない・消さない）
+    // マーカーを見失ったとき
     targetEntity.addEventListener('targetLost', () => {
-      if (!isAttached) {
-        statusEl.textContent = 'マーカーを検索中...';
-        statusEl.className = '';
-      }
-      // マーカーを外しても動画の一時停止や非表示は行いません
+      statusEl.textContent = 'マーカーを検索中...';
+      statusEl.className = '';
+      videoEl.pause();
     });
 
     // ピンチイン・ピンチアウト（拡大縮小）の処理
