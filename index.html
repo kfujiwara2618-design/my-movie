@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>MindAR MP4動画再生</title>
+  <title>MindAR MP4動画 確実再生・常時表示</title>
   <style>
     body {
       margin: 0;
@@ -36,7 +36,7 @@
 
   <!-- 操作ガイドの表示 -->
   <div id="info-overlay">
-    <div>状態: <span id="status">準備中...</span></div>
+    <div>状態: <span id="status">画面をタップして準備してください</span></div>
     <div style="margin-top: 4px; font-size: 10px; color: #aaa;">2本指ピンチ: 動画の拡大縮小</div>
   </div>
 
@@ -46,7 +46,7 @@
     device-orientation-permission-ui="enabled: false">
 
     <a-assets>
-      <!-- MP4動画の読み込み (スマホ対応のため playsinline, muted を推奨) -->
+      <!-- MP4動画の読み込み (スマホ対応のため playsinline, muted を指定) -->
       <video id="vid" src="video.mp4" preload="auto" response-type="arraybuffer" loop crossorigin="anonymous" webkit-playsinline playsinline muted></video>
     </a-assets>
 
@@ -54,7 +54,7 @@
 
     <!-- マーカーを認識したときに表示されるターゲット -->
     <a-entity id="targetEntity" mindar-image-target="targetIndex: 0">
-      <!-- 動画を表示する板 (16:9のアスペクト比の例: width=1, height=0.5625) -->
+      <!-- 動画を表示する板 (16:9のアスペクト比) -->
       <a-plane 
         id="videoPlane" 
         src="#vid" 
@@ -72,10 +72,14 @@
     const sceneEl = document.querySelector('a-scene');
     const videoPlane = document.querySelector('#videoPlane');
     const videoEl = document.querySelector('#vid');
+    const targetEntity = document.querySelector('#targetEntity');
 
-    // カメラ起動・エラーの判定
+    let isAttached = false;     // 空間固定を一度だけ実行するためのフラグ
+    let isVideoUnlocked = false; // スマホの自動再生制限解除フラグ
+
+    // カメラ起動時の処理
     sceneEl.addEventListener("arReady", () => {
-      statusEl.textContent = "カメラ起動成功！マーカーをかざしてください";
+      statusEl.textContent = "カメラ起動！画面をタップしてマーカーをかざしてください";
       statusEl.className = "success";
     });
 
@@ -84,25 +88,62 @@
       statusEl.className = "error";
     });
 
-    const targetEntity = document.querySelector('#targetEntity');
-    
+    // 【重要】スマホの自動再生制限を解除するため、最初の画面タッチで動画をアンロックする
+    window.addEventListener('touchstart', () => {
+      if (!isVideoUnlocked) {
+        videoEl.play().then(() => {
+          videoEl.pause(); // すぐ一時停止して準備完了状態にする
+          isVideoUnlocked = true;
+          console.log("動画の自動再生制限が解除されました");
+        }).catch(err => {
+          console.log("アンロック時のエラー:", err);
+        });
+      }
+    }, { once: true });
+
     // マーカーを検出したとき
     targetEntity.addEventListener('targetFound', () => {
-      statusEl.textContent = "認識成功！動画再生中";
+      statusEl.textContent = "認識成功！動画再生中（マーカーを外しても継続します）";
       statusEl.className = 'success';
+
+      // 初回認識時に、動画の板をマーカーの管理から外し、現在のワールド座標を維持したまま空間に固定する
+      if (!isAttached && videoPlane.object3D) {
+        isAttached = true;
+
+        // 現在のワールド座標・回転・スケールを取得
+        const worldPos = new THREE.Vector3();
+        const worldQuat = new THREE.Quaternion();
+        const worldScale = new THREE.Vector3();
+
+        videoPlane.object3D.getWorldPosition(worldPos);
+        videoPlane.object3D.getWorldQuaternion(worldQuat);
+        videoPlane.object3D.getWorldScale(worldScale);
+
+        // シーン直下に移動させる
+        sceneEl.object3D.add(videoPlane.object3D);
+
+        // 取得したワールド座標を再適用して位置のズレや消失を防ぐ
+        videoPlane.object3D.position.copy(worldPos);
+        videoPlane.object3D.quaternion.copy(worldQuat);
+        videoPlane.object3D.scale.copy(worldScale);
+      }
+
+      // 確実に動画を再生する
       videoEl.play().catch(error => {
-        console.log("自動再生がブロックされました:", error);
+        console.log("再生に失敗しました:", error);
       });
     });
 
-    // マーカーを見失ったとき
+    // マーカーを見失ったとき（動画は止めない・消さない・その場に維持）
     targetEntity.addEventListener('targetLost', () => {
-      statusEl.textContent = 'マーカーを検索中...';
-      statusEl.className = '';
-      videoEl.pause();
+      if (!isAttached) {
+        statusEl.textContent = 'マーカーを検索中...';
+        statusEl.className = '';
+      }
+      // マーカーを外しても動画の停止・非表示は一切行いません
     });
 
-    // ピンチイン・ピンチアウト（拡大縮小）の処理
+    // 2本指でのピンチイン・ピンチアウト（拡大縮小）の処理
     let initialDistance = null;
     let initialScale = 1;
 
