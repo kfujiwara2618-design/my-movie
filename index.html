@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>MindAR MP4動画再生（表示持続版）</title>
+  <title>常時動画表示AR</title>
   <style>
     body {
       margin: 0;
@@ -31,26 +31,6 @@
   <!-- A-Frame & MindAR の読み込み -->
   <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
-
-  <script>
-    // 一度マーカーを認識したら、見失っても表示を維持し続けるカスタムコンポーネント
-    AFRAME.registerComponent('persist-on-found', {
-      init: function() {
-        this.found = false;
-        const target = this.el;
-        
-        target.addEventListener('targetFound', () => {
-          this.found = true;
-        });
-      },
-      tick: function() {
-        // 一度でも認識されたら、強制的に表示状態を維持する
-        if (this.found) {
-          this.el.object3D.visible = true;
-        }
-      }
-    });
-  </script>
 </head>
 <body>
 
@@ -66,24 +46,21 @@
     device-orientation-permission-ui="enabled: false">
 
     <a-assets>
-      <!-- MP4動画の読み込み -->
+      <!-- MP4動画の読み込み (スマホ対応のため playsinline, muted を推奨) -->
       <video id="vid" src="video.mp4" preload="auto" response-type="arraybuffer" loop crossorigin="anonymous" webkit-playsinline playsinline muted></video>
     </a-assets>
 
     <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
 
-    <!-- persist-on-found を追加して、一度の認識で表示を固定 -->
-    <a-entity id="targetEntity" mindar-image-target="targetIndex: 0" persist-on-found>
-      <!-- 動画を表示する板 (16:9のアスペクト比: width=1, height=0.5625) -->
-      <a-plane 
-        id="videoPlane" 
-        src="#vid" 
-        position="0 0 0" 
-        width="1" 
-        height="0.5625" 
-        scale="1 1 1">
-      </a-plane>
-    </a-entity>
+    <!-- マーカーを使わず、カメラの正面の空間（Z=-1.5の位置）に常に動画を表示する -->
+    <a-plane 
+      id="videoPlane" 
+      src="#vid" 
+      position="0 0 -1.5" 
+      width="1" 
+      height="0.5625" 
+      scale="1 1 1">
+    </a-plane>
 
   </a-scene>
 
@@ -93,33 +70,27 @@
     const videoPlane = document.querySelector('#videoPlane');
     const videoEl = document.querySelector('#vid');
 
-    // カメラ起動・エラーの判定
+    // カメラ起動成功時に自動で動画を再生し、常時表示させる
     sceneEl.addEventListener("arReady", () => {
-      statusEl.textContent = "カメラ起動成功！一度マーカーをかざしてください";
+      statusEl.textContent = "カメラ起動成功！動画再生中";
       statusEl.className = "success";
-    });
-
-    sceneEl.addEventListener("arError", () => {
-      statusEl.textContent = "エラー: targets.mind の読み込み失敗";
-      statusEl.className = "error";
-    });
-
-    const targetEntity = document.querySelector('#targetEntity');
-    
-    // マーカーを初めて検出したとき
-    targetEntity.addEventListener('targetFound', () => {
-      statusEl.textContent = "認識成功！表示を固定して再生中";
-      statusEl.className = 'success';
+      
       videoEl.play().catch(error => {
         console.log("自動再生がブロックされました:", error);
+        statusEl.textContent = "画面をタップして動画を開始してください";
+        
+        // ブラウザの仕様で自動再生がブロックされた場合、最初の画面タップで再生を開始する
+        window.addEventListener('click', () => {
+          videoEl.play();
+          statusEl.textContent = "動画再生中";
+          statusEl.className = "success";
+        }, { once: true });
       });
     });
 
-    // マーカーを見失っても、動画や表示は止めない（一時停止を削除）
-    targetEntity.addEventListener('targetLost', () => {
-      // ここであえて videoEl.pause() を呼ばないことで再生を継続
-      statusEl.textContent = '表示継続中（マーカー非表示）';
-      statusEl.className = 'success';
+    sceneEl.addEventListener("arError", () => {
+      statusEl.textContent = "エラー: カメラの起動に失敗しました";
+      statusEl.className = "error";
     });
 
     // ピンチイン・ピンチアウト（拡大縮小）の処理
