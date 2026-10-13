@@ -3,43 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>MindAR MP4動画再生（確実起動・常時表示）</title>
+  <title>MindAR MP4動画再生（常時表示・継続再生）</title>
   <style>
     body {
       margin: 0;
       padding: 0;
       overflow: hidden;
       font-family: sans-serif;
-    }
-    /* スマホの自動再生ブロックを回避するためのスタート画面 */
-    #start-overlay {
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background: rgba(0, 0, 0, 0.9);
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      align-items: center;
-      z-index: 10000;
-      color: #fff;
-      text-align: center;
-      padding: 20px;
-      box-sizing: border-box;
-    }
-    #start-btn {
-      background: #51cf66;
-      color: white;
-      border: none;
-      padding: 16px 36px;
-      font-size: 18px;
-      font-weight: bold;
-      border-radius: 30px;
-      cursor: pointer;
-      box-shadow: 0 4px 15px rgba(81, 207, 102, 0.4);
-      margin-top: 20px;
     }
     #info-overlay {
       position: absolute;
@@ -64,15 +34,6 @@
 </head>
 <body>
 
-  <!-- 最初に必ずタップさせることで、スマホの動画ブロックを回避 -->
-  <div id="start-overlay">
-    <h2>AR動画プレーヤー</h2>
-    <p style="font-size: 14px; color: #ccc; max-width: 300px; line-height: 1.5;">
-      ボタンを押すとカメラが起動します。<br>マーカーをかざして動画を再生してください。
-    </p>
-    <button id="start-btn">タップしてARを開始</button>
-  </div>
-
   <!-- 操作ガイドの表示 -->
   <div id="info-overlay">
     <div>状態: <span id="status">準備中...</span></div>
@@ -85,14 +46,15 @@
     device-orientation-permission-ui="enabled: false">
 
     <a-assets>
-      <!-- MP4動画の読み込み設定 -->
+      <!-- MP4動画の読み込み (スマホ対応のため playsinline, muted を推奨) -->
       <video id="vid" src="video.mp4" preload="auto" response-type="arraybuffer" loop crossorigin="anonymous" webkit-playsinline playsinline muted></video>
     </a-assets>
 
     <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
 
-    <!-- マーカーを認識したときに基準とするターゲット -->
+    <!-- マーカーを認識したときに表示されるターゲット -->
     <a-entity id="targetEntity" mindar-image-target="targetIndex: 0">
+      <!-- 動画を表示する板 -->
       <a-plane 
         id="videoPlane" 
         src="#vid" 
@@ -106,35 +68,17 @@
   </a-scene>
 
   <script>
-    const startOverlay = document.getElementById('start-overlay');
-    const startBtn = document.getElementById('start-btn');
     const statusEl = document.getElementById('status');
     const sceneEl = document.querySelector('a-scene');
     const videoPlane = document.querySelector('#videoPlane');
     const videoEl = document.querySelector('#vid');
     const targetEntity = document.querySelector('#targetEntity');
 
-    let isLocked = false; // 一度認識したかどうかのフラグ
-
-    // ユーザーのタップをトリガーに動画の再生権限を取得してスタート
-    startBtn.addEventListener('click', () => {
-      startOverlay.style.display = 'none';
-
-      // 動画のロードと空打ち再生で権限を強制取得
-      videoEl.load();
-      videoEl.play().then(() => {
-        videoEl.pause();
-        videoEl.currentTime = 0;
-      }).catch(e => {
-        console.log("初期化再生エラー:", e);
-      });
-
-      statusEl.textContent = "カメラ起動中... マーカーをかざしてください";
-    });
+    let isAttached = false; // 空間固定を一度だけ実行するためのフラグ
 
     // カメラ起動・エラーの判定
     sceneEl.addEventListener("arReady", () => {
-      statusEl.textContent = "準備完了！マーカーをかざしてください";
+      statusEl.textContent = "カメラ起動成功！マーカーをかざしてください";
       statusEl.className = "success";
     });
 
@@ -142,47 +86,32 @@
       statusEl.textContent = "エラー: targets.mind の読み込み失敗";
       statusEl.className = "error";
     });
-
+    
     // マーカーを検出したとき
     targetEntity.addEventListener('targetFound', () => {
       statusEl.textContent = "認識成功！動画再生中（マーカーを外しても継続します）";
       statusEl.className = 'success';
 
-      // 動画の再生を確実に実行
-      videoEl.play().catch(error => {
-        console.log("再生エラー:", error);
-      });
-
-      // 初回認識時：動画をその位置に完全に固定し、マーカー追従から切り離す
-      if (!isLocked) {
-        isLocked = true;
-
-        const worldPos = new THREE.Vector3();
-        const worldQuat = new THREE.Quaternion();
-        const worldScale = new THREE.Vector3();
-
-        // 現在のワールド座標・回転・スケールを安全に抽出
-        videoPlane.object3D.matrixWorld.decompose(worldPos, worldQuat, worldScale);
-
-        // シーン直下に直接オブジェクトを移す（テクスチャが途切れない安全な方法）
-        sceneEl.object3D.add(videoPlane.object3D);
-
-        // 抽出した位置をそのまま適用
-        videoPlane.object3D.position.copy(worldPos);
-        videoPlane.object3D.quaternion.copy(worldQuat);
-        videoPlane.object3D.scale.copy(worldScale);
+      // 初回認識時に、動画の板をマーカーの管理から安全に切り離して空間に固定する
+      if (!isAttached && videoPlane.object3D) {
+        isAttached = true;
+        // DOMは壊さず、内部の3D空間の所属だけをシーン直下に安全に付け替える
+        sceneEl.object3D.attach(videoPlane.object3D);
       }
 
-      videoPlane.setAttribute('visible', 'true');
+      // 動画の再生
+      videoEl.play().catch(error => {
+        console.log("自動再生がブロックされました:", error);
+      });
     });
 
-    // マーカーを見失っても動画は止めない・消さない
+    // マーカーを見失ったとき（動画は止めない・消さない）
     targetEntity.addEventListener('targetLost', () => {
-      if (!isLocked) {
+      if (!isAttached) {
         statusEl.textContent = 'マーカーを検索中...';
         statusEl.className = '';
       }
-      // 固定後はマーカーを外しても何もしない（再生継続）
+      // マーカーを外しても動画の一時停止や非表示は行いません
     });
 
     // ピンチイン・ピンチアウト（拡大縮小）の処理
