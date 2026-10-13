@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>MindAR MP4動画再生（マーカーロスト保持対応）</title>
+  <title>MindAR MP4動画再生（常時表示・継続再生）</title>
   <style>
     body {
       margin: 0;
@@ -46,15 +46,15 @@
     device-orientation-permission-ui="enabled: false">
 
     <a-assets>
-      <!-- MP4動画の読み込み -->
+      <!-- MP4動画の読み込み設定 -->
       <video id="vid" src="video.mp4" preload="auto" response-type="arraybuffer" loop crossorigin="anonymous" webkit-playsinline playsinline muted></video>
     </a-assets>
 
     <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
 
-    <!-- マーカーを認識したときに一度だけ使われるターゲット -->
+    <!-- マーカーを認識したときに基準とするターゲット -->
     <a-entity id="targetEntity" mindar-image-target="targetIndex: 0">
-      <!-- 動画を表示する板 -->
+      <!-- 最初はこの中に配置され、認識された瞬間にシーン直下に切り離されて固定されます -->
       <a-plane 
         id="videoPlane" 
         src="#vid" 
@@ -74,7 +74,10 @@
     const videoEl = document.querySelector('#vid');
     const targetEntity = document.querySelector('#targetEntity');
 
-    let hasStarted = false;
+    let isLocked = false; // 一度認識したかどうかのフラグ
+
+    // 動画の読み込みを確実にトリガー
+    videoEl.load();
 
     // カメラ起動・エラーの判定
     sceneEl.addEventListener("arReady", () => {
@@ -87,38 +90,45 @@
       statusEl.className = "error";
     });
 
-    // マーカーを最初に検出したときの処理
+    // マーカーを検出したとき
     targetEntity.addEventListener('targetFound', () => {
-      if (hasStarted) return; // 2回目以降の検知は無視
-      hasStarted = true;
-
-      statusEl.textContent = "再生中（マーカーを離しても消えません）";
+      statusEl.textContent = "認識成功！動画再生中（マーカーを外しても継続します）";
       statusEl.className = 'success';
 
-      // 1. 動画を再生開始
+      // まだ固定されていない場合、マーカーの位置に動画を固定してトラッキングから切り離す
+      if (!isLocked) {
+        isLocked = true;
+        const worldPos = new THREE.Vector3();
+        const worldRot = new THREE.Quaternion();
+        const worldScale = new THREE.Vector3();
+
+        // 現在のワールド座標を取得
+        videoPlane.object3D.getWorldPosition(worldPos);
+        videoPlane.object3D.getWorldQuaternion(worldRot);
+        videoPlane.object3D.getWorldScale(worldScale);
+
+        // シーン（a-scene）の直下に移動させることで、マーカーのロストの影響を受けなくする
+        sceneEl.appendChild(videoPlane);
+
+        // 取得した座標をそのまま適用
+        videoPlane.object3D.position.copy(worldPos);
+        videoPlane.object3D.quaternion.copy(worldRot);
+        videoPlane.object3D.scale.copy(worldScale);
+      }
+
+      // 動画の再生を確実に実行
       videoEl.play().catch(error => {
         console.log("自動再生がブロックされました:", error);
       });
+    });
 
-      // 2. マーカーを見失っても消えないように、現在の世界座標を維持したまま
-      //   動画プレーンをマーカーの階層（targetEntity）からシーン直下に移動させる
-      const worldPos = new THREE.Vector3();
-      const worldQuat = new THREE.Quaternion();
-      const worldScale = new THREE.Vector3();
-
-      videoPlane.object3D.getWorldPosition(worldPos);
-      videoPlane.object3D.getWorldQuaternion(worldQuat);
-      videoPlane.object3D.getWorldScale(worldScale);
-
-      // シーン直下にアタッチし直す
-      sceneEl.appendChild(videoPlane);
-
-      // 取得した座標をそのまま再適用してその場に固定
-      videoPlane.object3D.position.copy(worldPos);
-      videoPlane.object3D.quaternion.copy(worldQuat);
-      videoPlane.object3D.scale.copy(worldScale);
-      
-      videoPlane.setAttribute('visible', true);
+    // マーカーを見失っても動画は止めない・消さない（何もしない仕様に変更）
+    targetEntity.addEventListener('targetLost', () => {
+      if (!isLocked) {
+        statusEl.textContent = 'マーカーを検索中...';
+        statusEl.className = '';
+      }
+      // マーカーを外しても動画は停止しません
     });
 
     // ピンチイン・ピンチアウト（拡大縮小）の処理
