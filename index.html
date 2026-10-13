@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>MindAR MP4動画再生</title>
+  <title>MindAR マーカーレス動画常時表示</title>
   <style>
     body {
       margin: 0;
@@ -46,15 +46,15 @@
     device-orientation-permission-ui="enabled: false">
 
     <a-assets>
-      <!-- MP4動画の読み込み (スマホ対応のため playsinline, muted を推奨) -->
+      <!-- MP4動画の読み込み -->
       <video id="vid" src="video.mp4" preload="auto" response-type="arraybuffer" loop crossorigin="anonymous" webkit-playsinline playsinline muted></video>
     </a-assets>
 
     <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
 
-    <!-- マーカーを認識したときに表示されるターゲット -->
-    <a-entity id="targetEntity" mindar-image-target="targetIndex: 0">
-      <!-- 動画を表示する板 (16:9のアスペクト比の例: width=1, height=0.5625) -->
+    <!-- マーカーを不要にし、カメラの正面（空間の固定位置）に常時表示するエンティティ -->
+    <a-entity position="0 0 -1.5">
+      <!-- 動画を表示する板 (16:9のアスペクト比: width=1, height=0.5625) -->
       <a-plane 
         id="videoPlane" 
         src="#vid" 
@@ -73,33 +73,28 @@
     const videoPlane = document.querySelector('#videoPlane');
     const videoEl = document.querySelector('#vid');
 
-    // カメラ起動・エラーの判定
+    // カメラ起動成功時に自動で動画を再生し、常時表示状態にする
     sceneEl.addEventListener("arReady", () => {
-      statusEl.textContent = "カメラ起動成功！マーカーをかざしてください";
+      statusEl.textContent = "カメラ起動完了！動画再生中（マーカー不要）";
       statusEl.className = "success";
-    });
-
-    sceneEl.addEventListener("arError", () => {
-      statusEl.textContent = "エラー: targets.mind の読み込み失敗";
-      statusEl.className = "error";
-    });
-
-    const targetEntity = document.querySelector('#targetEntity');
-    
-    // マーカーを検出したとき
-    targetEntity.addEventListener('targetFound', () => {
-      statusEl.textContent = "認識成功！動画再生中";
-      statusEl.className = 'success';
+      
       videoEl.play().catch(error => {
         console.log("自動再生がブロックされました:", error);
+        statusEl.textContent = "画面をタップして再生してください";
       });
     });
 
-    // マーカーを見失ったとき
-    targetEntity.addEventListener('targetLost', () => {
-      statusEl.textContent = 'マーカーを検索中...';
-      statusEl.className = '';
-      videoEl.pause();
+    // エラー処理
+    sceneEl.addEventListener("arError", () => {
+      statusEl.textContent = "エラー: カメラまたはシステムの初期化に失敗しました";
+      statusEl.className = "error";
+    });
+
+    // 自動再生ブロック対策：画面がタップされたら再生を試みる
+    window.addEventListener('click', () => {
+      if (videoEl.paused) {
+        videoEl.play();
+      }
     });
 
     // ピンチイン・ピンチアウト（拡大縮小）の処理
