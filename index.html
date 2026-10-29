@@ -3,225 +3,429 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>MindAR MP4動画再生</title>
+  <title>MindAR MP4動画再生・ロード進捗・継続表示</title>
+
   <style>
-    body {
+    html, body {
+      width: 100%;
+      height: 100%;
       margin: 0;
       padding: 0;
       overflow: hidden;
+      background: #000;
       font-family: sans-serif;
+      touch-action: none;
     }
+
+    a-scene {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+
     #info-overlay {
-      position: absolute;
+      position: fixed;
       top: 12px;
       left: 12px;
-      background: rgba(0, 0, 0, 0.8);
-      color: #ffffff;
+      max-width: calc(100vw - 170px);
       padding: 10px 14px;
+      box-sizing: border-box;
       border-radius: 8px;
+      background: rgba(0, 0, 0, 0.8);
+      color: #fff;
       font-size: 12px;
-      z-index: 999;
+      z-index: 9999;
       pointer-events: none;
     }
-    #status { font-weight: bold; color: #ffd700; }
+
+    #status {
+      color: #ffd700;
+      font-weight: bold;
+    }
+
     .success { color: #51cf66 !important; }
     .error { color: #ff6b6b !important; }
+
+    #loading-overlay {
+      position: fixed;
+      top: 12px;
+      right: 12px;
+      max-width: 48vw;
+      padding: 10px 12px;
+      box-sizing: border-box;
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.85);
+      color: #ffd700;
+      font-size: 12px;
+      font-weight: bold;
+      text-align: right;
+      z-index: 10000;
+      pointer-events: none;
+    }
+
+    #retryButton {
+      display: none;
+      position: fixed;
+      left: 50%;
+      bottom: 28px;
+      transform: translateX(-50%);
+      z-index: 10001;
+      padding: 14px 22px;
+      border: 0;
+      border-radius: 10px;
+      background: #1465cc;
+      color: #fff;
+      font-size: 16px;
+      font-weight: bold;
+      white-space: nowrap;
+      touch-action: manipulation;
+    }
   </style>
 
-  <!-- A-Frame & MindAR の読み込み -->
   <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
 </head>
 <body>
-
-  <!-- 操作ガイドの表示 -->
   <div id="info-overlay">
-    <div>状態: <span id="status">カメラ起動待機中...</span></div>
-    <div style="margin-top: 4px; font-size: 10px; color: #aaa;">1本指スライド: 位置移動 / 2本指ピンチ: 拡大縮小</div>
+    <div>状態：<span id="status">準備中...</span></div>
+    <div style="margin-top:4px;color:#aaa;font-size:10px;">
+      1本指スライド：動画移動 ／ 2本指：拡大縮小
+    </div>
   </div>
 
-  <a-scene 
-    mindar-image="imageTargetSrc: ./targets.mind;" 
-    vr-mode-ui="enabled: false" 
+  <div id="loading-overlay">動画読込：マーカー待機中</div>
+  <button id="retryButton" type="button">動画を開始／再試行</button>
+
+  <a-scene
+    mindar-image="imageTargetSrc: ./targets.mind;"
+    vr-mode-ui="enabled: false"
     device-orientation-permission-ui="enabled: false">
 
     <a-assets>
-      <!-- 動画要素（srcはJSで動的に読み込み確実性を高めます） -->
-      <video id="vid" preload="auto" loop crossorigin="anonymous" webkit-playsinline playsinline muted></video>
+      <!-- マーカー認識後にJavaScriptでsrcを設定する -->
+      <video
+        id="vid"
+        preload="none"
+        loop
+        muted
+        playsinline
+        webkit-playsinline
+        crossorigin="anonymous"></video>
     </a-assets>
 
-    <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+    <!-- 動画面を最初からカメラの子にすることで、マーカーを見失っても画面内に残す -->
+    <a-camera id="camera" position="0 0 0" look-controls="enabled: false">
+      <a-video
+        id="videoPlane"
+        position="0 0 -1.8"
+        width="1"
+        height="0.5625"
+        scale="1 1 1"
+        visible="false"></a-video>
+    </a-camera>
 
-    <!-- マーカーを認識したときに表示されるターゲット -->
-    <a-entity id="targetEntity" mindar-image-target="targetIndex: 0">
-      <!-- 動画を表示する板 (16:9のアスペクト比の例: width=1, height=0.5625) -->
-      <a-plane 
-        id="videoPlane" 
-        src="#vid" 
-        position="0 0 0" 
-        width="1" 
-        height="0.5625" 
-        scale="1 1 1">
-      </a-plane>
-    </a-entity>
-
+    <!-- マーカーは動画ロードを開始するために使用する -->
+    <a-entity id="targetEntity" mindar-image-target="targetIndex: 0"></a-entity>
   </a-scene>
 
   <script>
-    const statusEl = document.getElementById('status');
     const sceneEl = document.querySelector('a-scene');
-    const videoPlane = document.querySelector('#videoPlane');
-    const videoEl = document.querySelector('#vid');
-    const targetEntity = document.querySelector('#targetEntity');
+    const statusEl = document.getElementById('status');
+    const loadingEl = document.getElementById('loading-overlay');
+    const retryButton = document.getElementById('retryButton');
+    const targetEntity = document.getElementById('targetEntity');
+    const videoEl = document.getElementById('vid');
+    const videoPlane = document.getElementById('videoPlane');
 
-    let videoLoaded = false;
+    let isLoading = false;
+    let isVideoReady = false;
+    let hasDetectedMarker = false;
+    let videoObjectUrl = null;
 
-    // カメラ起動後にFetch APIで動画をロードし、パーセントを表示する関数
-    function loadVideoWithProgress() {
-      statusEl.textContent = "動画ロード中... 0%";
-      
-      fetch('video.mp4')
-        .then(response => {
-          if (!response.ok) throw new Error('動画ファイルの取得に失敗しました');
-          const total = parseInt(response.headers.get('content-length'), 10);
-          let loaded = 0;
-
-          const reader = response.body.getReader();
-          return new ReadableStream({
-            start(controller) {
-              function push() {
-                reader.read().then(({ done, value }) => {
-                  if (done) {
-                    controller.close();
-                    return;
-                  }
-                  loaded += value.byteLength;
-                  if (total) {
-                    const percent = Math.round((loaded / total) * 100);
-                    statusEl.textContent = `動画ロード中... ${percent}%`;
-                  } else {
-                    statusEl.textContent = `動画ロード中... (${Math.round(loaded / 1024)}KB)`;
-                  }
-                  controller.enqueue(value);
-                  push();
-                }).catch(err => {
-                  controller.error(err);
-                });
-              }
-              push();
-            }
-          });
-        })
-        .then(stream => new Response(stream))
-        .then(response => response.blob())
-        .then(blob => {
-          const videoUrl = URL.createObjectURL(blob);
-          videoEl.src = videoUrl;
-          videoEl.load();
-          videoLoaded = true;
-          statusEl.textContent = "ロード完了！マーカーをかざしてください";
-          statusEl.className = "success";
-        })
-        .catch(error => {
-          console.error(error);
-          statusEl.textContent = "エラー: video.mp4 の読み込み失敗";
-          statusEl.className = "error";
-        });
+    function setStatus(message, type = '') {
+      statusEl.textContent = message;
+      statusEl.className = type;
     }
 
-    // カメラ起動成功の判定
-    sceneEl.addEventListener("arReady", () => {
-      statusEl.textContent = "カメラ起動成功！動画のロードを開始します...";
-      statusEl.className = "success";
-      // カメラ起動後に動画のロードを開始
-      loadVideoWithProgress();
+    sceneEl.addEventListener('arReady', () => {
+      setStatus('カメラ起動成功。マーカーをかざしてください');
     });
 
-    sceneEl.addEventListener("arError", () => {
-      statusEl.textContent = "エラー: カメラの起動または targets.mind の読み込み失敗";
-      statusEl.className = "error";
+    sceneEl.addEventListener('arError', (event) => {
+      console.error('MindAR起動エラー:', event);
+      setStatus('AR起動エラー。カメラ権限とtargets.mindを確認してください', 'error');
     });
 
-    // マーカーを検出したとき
-    targetEntity.addEventListener('targetFound', () => {
-      if (!videoLoaded) return;
-      statusEl.textContent = "認識成功！動画再生中";
-      statusEl.className = 'success';
-      videoEl.play().catch(error => {
-        console.log("自動再生が制限されました。画面をタップしてください:", error);
+    // 動画ファイルを取得し、Content-Lengthがある場合は実際の受信量から進捗を表示する。
+    async function fetchVideoBlob() {
+      const response = await fetch('./video.mp4', { cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error(`video.mp4の取得に失敗しました（HTTP ${response.status}）`);
+      }
+
+      // URL側のContent-Type設定に左右されないよう、MP4としてBlob化する
+      const contentType = 'video/mp4';
+      const total = Number(response.headers.get('content-length') || 0);
+
+      // ストリーム読み込みに対応していない場合のフォールバック
+      if (!response.body || typeof response.body.getReader !== 'function') {
+        loadingEl.textContent = '動画読込：受信中（割合計算不可）';
+        const rawBlob = await response.blob();
+        const blob = new Blob([rawBlob], { type: contentType });
+        loadingEl.textContent = '動画読込：100%（再生準備中）';
+        return blob;
+      }
+
+      const reader = response.body.getReader();
+      const chunks = [];
+      let loaded = 0;
+
+      while (true) {
+        const result = await reader.read();
+        if (result.done) break;
+
+        chunks.push(result.value);
+        loaded += result.value.byteLength;
+
+        if (total > 0) {
+          const percent = Math.min(99, Math.floor((loaded / total) * 100));
+          loadingEl.textContent = `動画読込：${percent}%`;
+        } else {
+          // Content-Lengthがない場合、正確なパーセントは算出できないため受信量を表示
+          loadingEl.textContent = `動画読込：--%（${(loaded / 1024 / 1024).toFixed(1)} MB）`;
+        }
+      }
+
+      loadingEl.textContent = '動画読込：100%（再生準備中）';
+      return new Blob(chunks, { type: contentType });
+    }
+
+    // MP4のデータ受信後、ブラウザが再生可能な状態になるまで待つ。
+    function waitForCanPlay(media) {
+      return new Promise((resolve, reject) => {
+        if (media.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+          resolve();
+          return;
+        }
+
+        let timer = null;
+
+        const cleanup = () => {
+          if (timer !== null) clearTimeout(timer);
+          media.removeEventListener('canplay', onCanPlay);
+          media.removeEventListener('error', onError);
+        };
+
+        const onCanPlay = () => {
+          cleanup();
+          resolve();
+        };
+
+        const onError = () => {
+          const code = media.error ? media.error.code : '不明';
+          cleanup();
+          reject(new Error(`MP4の読み込み・デコードに失敗しました（code: ${code}）`));
+        };
+
+        media.addEventListener('canplay', onCanPlay);
+        media.addEventListener('error', onError);
+        timer = setTimeout(() => {
+          cleanup();
+          reject(new Error('動画の再生準備がタイムアウトしました'));
+        }, 45000);
+
+        media.load();
+
+        // load()直後にreadyStateが変わった場合も取りこぼさない
+        if (media.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+          onCanPlay();
+        }
       });
-    });
+    }
 
-    // マーカーを見失ったとき
-    targetEntity.addEventListener('targetLost', () => {
-      statusEl.textContent = 'マーカーを検索中...';
-      statusEl.className = '';
-      videoEl.pause();
-    });
+    async function loadVideoAfterMarker() {
+      if (isLoading || isVideoReady) return;
 
-    // 保険：スマホの自動再生ブロック対策として、画面タップでも再生を試みる
-    window.addEventListener('click', () => {
-      if (videoEl.paused && videoLoaded) {
-        videoEl.play().catch(e => console.log(e));
+      isLoading = true;
+      retryButton.style.display = 'none';
+      loadingEl.textContent = '動画読込：0%';
+      setStatus('マーカーを認識しました。動画を読み込んでいます...');
+
+      try {
+        const blob = await fetchVideoBlob();
+        if (!blob || blob.size === 0) {
+          throw new Error('video.mp4が空です');
+        }
+
+        if (videoObjectUrl) {
+          URL.revokeObjectURL(videoObjectUrl);
+          videoObjectUrl = null;
+        }
+
+        videoObjectUrl = URL.createObjectURL(blob);
+        videoEl.src = videoObjectUrl;
+        videoEl.muted = true;
+        videoEl.loop = true;
+        videoEl.playsInline = true;
+
+        await waitForCanPlay(videoEl);
+
+        // メディアが再生可能になってからA-Frameの動画テクスチャを設定する
+        videoPlane.setAttribute('src', '#vid');
+        videoPlane.setAttribute('visible', 'true');
+        isVideoReady = true;
+        loadingEl.textContent = '動画読込：100%（再生準備完了）';
+
+        // マーカーを見失っていてもロード完了後に再生を試みる
+        await playVideo();
+      } catch (error) {
+        console.error('動画ロードエラー:', error);
+        isVideoReady = false;
+        videoPlane.setAttribute('visible', 'false');
+        loadingEl.textContent = '動画読込：エラー';
+        setStatus('動画を読み込めません。video.mp4の配置・形式を確認してください', 'error');
+        retryButton.textContent = '動画読込を再試行';
+        retryButton.style.display = 'block';
+
+        videoEl.pause();
+        videoEl.removeAttribute('src');
+        videoEl.load();
+        if (videoObjectUrl) {
+          URL.revokeObjectURL(videoObjectUrl);
+          videoObjectUrl = null;
+        }
+      } finally {
+        isLoading = false;
+      }
+    }
+
+    async function playVideo() {
+      if (!isVideoReady) return;
+
+      // ミュート再生はモバイルブラウザの自動再生制限に対応しやすい
+      videoEl.muted = true;
+      videoPlane.setAttribute('visible', 'true');
+
+      try {
+        await videoEl.play();
+        retryButton.style.display = 'none';
+        setStatus('動画再生中。マーカーを見失っても表示を維持します', 'success');
+      } catch (error) {
+        console.warn('自動再生が拒否されました。利用者の操作が必要です:', error);
+        setStatus('自動再生が制限されました。下のボタンを押してください', 'error');
+        retryButton.textContent = 'タップして動画を再生';
+        retryButton.style.display = 'block';
+      }
+    }
+
+    targetEntity.addEventListener('targetFound', () => {
+      hasDetectedMarker = true;
+
+      if (!isVideoReady && !isLoading) {
+        // カメラ起動後、マーカーを初めて認識したタイミングで動画をロード
+        loadVideoAfterMarker();
+      } else if (isLoading) {
+        setStatus('動画を読み込んでいます...', 'success');
+      } else if (isVideoReady && videoEl.paused) {
+        playVideo();
+      } else {
+        setStatus('動画再生中。マーカーを見失っても表示を維持します', 'success');
       }
     });
 
-    // タッチ操作（1本指でのスライド移動 ＆ 2本指での拡大縮小）
-    let isDragging = false;
-    let previousTouchPosition = { x: 0, y: 0 };
+    targetEntity.addEventListener('targetLost', () => {
+      // 重要：動画をpause・非表示にしない。カメラの子要素なので表示位置も維持する。
+      if (isLoading) {
+        setStatus('マーカーを見失いました。動画の読み込みは継続中です');
+      } else if (isVideoReady && !videoEl.paused) {
+        setStatus('マーカーを見失いましたが、動画は継続再生中です', 'success');
+      } else if (!hasDetectedMarker) {
+        setStatus('マーカーを検索中...');
+      } else if (isVideoReady && videoEl.paused) {
+        setStatus('動画が停止しています。再生ボタンを押してください', 'error');
+      }
+    });
+
+    videoEl.addEventListener('playing', () => {
+      videoPlane.setAttribute('visible', 'true');
+      retryButton.style.display = 'none';
+      setStatus('動画再生中。マーカーを見失っても表示を維持します', 'success');
+    });
+
+    retryButton.addEventListener('click', () => {
+      // ボタン操作はブラウザのユーザー操作として再生を許可されやすい
+      if (isVideoReady) {
+        playVideo();
+      } else {
+        loadVideoAfterMarker();
+      }
+    });
+
+    // タッチ開始：停止中ならユーザー操作を利用して再生を再試行する。
+    let gestureMode = null;
+    let startX = 0;
+    let startY = 0;
+    let startPos = { x: 0, y: 0, z: -1.8 };
     let initialDistance = null;
     let initialScale = 1;
 
-    window.addEventListener('touchstart', (e) => {
-      if (e.touches.length === 1) {
-        isDragging = true;
-        previousTouchPosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-      } else if (e.touches.length === 2) {
-        isDragging = false;
+    window.addEventListener('touchstart', (event) => {
+      if (event.target instanceof Element && event.target.closest('#retryButton')) return;
+
+      if (isVideoReady && videoEl.paused) {
+        playVideo();
+      }
+      if (!isVideoReady) return;
+
+      if (event.touches.length === 1) {
+        gestureMode = 'drag';
+        startX = event.touches[0].clientX;
+        startY = event.touches[0].clientY;
+        const pos = videoPlane.getAttribute('position');
+        startPos = { x: pos.x, y: pos.y, z: pos.z };
+      } else if (event.touches.length === 2) {
+        gestureMode = 'pinch';
         initialDistance = Math.hypot(
-          e.touches[0].clientX - e.touches[1].clientX,
-          e.touches[0].clientY - e.touches[1].clientY
+          event.touches[0].clientX - event.touches[1].clientX,
+          event.touches[0].clientY - event.touches[1].clientY
         );
-        if (videoPlane) {
-          const s = videoPlane.getAttribute('scale');
-          if (s) initialScale = s.x;
-        }
+        const scale = videoPlane.getAttribute('scale');
+        initialScale = scale ? scale.x : 1;
       }
     }, { passive: true });
 
-    window.addEventListener('touchmove', (e) => {
-      if (!videoPlane) return;
+    window.addEventListener('touchmove', (event) => {
+      if (!isVideoReady || videoPlane.getAttribute('visible') === false) return;
 
-      // 1本指でのスライド（位置移動）
-      if (e.touches.length === 1 && isDragging) {
-        const deltaX = e.touches[0].clientX - previousTouchPosition.x;
-        const deltaY = e.touches[0].clientY - previousTouchPosition.y;
-        
-        const pos = videoPlane.getAttribute('position');
-        const speed = 0.003; // 移動の感度
-        pos.x += deltaX * speed;
-        pos.y -= deltaY * speed;
-        videoPlane.setAttribute('position', `${pos.x} ${pos.y} ${pos.z}`);
+      if (gestureMode === 'drag' && event.touches.length === 1) {
+        const dx = (event.touches[0].clientX - startX) * 0.003;
+        const dy = (event.touches[0].clientY - startY) * 0.003;
 
-        previousTouchPosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-      }
-
-      // 2本指でのピンチイン・ピンチアウト（拡大縮小）
-      if (e.touches.length === 2 && initialDistance !== null && initialDistance > 0) {
+        // 画面外へ大きく移動しにくいよう、中心位置に上限を設ける
+        const x = Math.max(-0.45, Math.min(0.45, startPos.x + dx));
+        const y = Math.max(-0.80, Math.min(0.80, startPos.y - dy));
+        videoPlane.setAttribute('position', `${x} ${y} ${startPos.z}`);
+      } else if (gestureMode === 'pinch' && event.touches.length === 2 && initialDistance > 0) {
         const currentDistance = Math.hypot(
-          e.touches[0].clientX - e.touches[1].clientX,
-          e.touches[0].clientY - e.touches[1].clientY
+          event.touches[0].clientX - event.touches[1].clientX,
+          event.touches[0].clientY - event.touches[1].clientY
         );
         const factor = currentDistance / initialDistance;
-        let newScale = Math.max(0.2, Math.min(3.0, initialScale * factor));
+        const newScale = Math.max(0.3, Math.min(2.5, initialScale * factor));
         videoPlane.setAttribute('scale', `${newScale} ${newScale} ${newScale}`);
       }
     }, { passive: true });
 
-    window.addEventListener('touchend', (e) => {
-      isDragging = false;
-      initialDistance = null;
-    });
+    window.addEventListener('touchend', (event) => {
+      if (event.touches.length === 0) {
+        gestureMode = null;
+        initialDistance = null;
+      } else if (event.touches.length < 2) {
+        gestureMode = null;
+        initialDistance = null;
+      }
+    }, { passive: true });
   </script>
 </body>
 </html>
