@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>MindAR MP4動画再生（常時再生モード）</title>
+  <title>MindAR MP4動画再生（マーカーロスト継続モード）</title>
   <style>
     body {
       margin: 0;
@@ -36,7 +36,7 @@
 
   <!-- 操作ガイドの表示 -->
   <div id="info-overlay">
-    <div>状態: <span id="status">準備中...</span></div>
+    <div>状態: <span id="status">画面をタップして準備完了してください</span></div>
     <div style="margin-top: 4px; font-size: 10px; color: #aaa;">2本指ピンチ: 動画の拡大縮小</div>
   </div>
 
@@ -46,7 +46,7 @@
     device-orientation-permission-ui="enabled: false">
 
     <a-assets>
-      <!-- MP4動画の読み込み (スマホ対応のため playsinline, muted を推奨) -->
+      <!-- MP4動画の読み込み -->
       <video id="vid" src="video.mp4" preload="auto" response-type="arraybuffer" loop crossorigin="anonymous" webkit-playsinline playsinline muted></video>
     </a-assets>
 
@@ -54,7 +54,7 @@
 
     <!-- マーカーを認識したときに表示されるターゲット -->
     <a-entity id="targetEntity" mindar-image-target="targetIndex: 0">
-      <!-- 動画を表示する板 (16:9のアスペクト比の例: width=1, height=0.5625) -->
+      <!-- 動画を表示する板 (16:9のアスペクト比: width=1, height=0.5625) -->
       <a-plane 
         id="videoPlane" 
         src="#vid" 
@@ -74,12 +74,29 @@
     const videoEl = document.querySelector('#vid');
     const targetEntity = document.querySelector('#targetEntity');
 
-    let hasStarted = false;
+    let isVideoUnlocked = false;
+    let isLocked = false;
+
+    // スマホの自動再生ブロックを確実に対策するため、最初の画面タップで動画をアンロック
+    window.addEventListener('click', () => {
+      if (!isVideoUnlocked) {
+        videoEl.play().then(() => {
+          videoEl.pause();
+          videoEl.currentTime = 0;
+          isVideoUnlocked = true;
+          statusEl.textContent = "準備完了！マーカーをかざしてください";
+          statusEl.className = "success";
+        }).catch(err => {
+          console.log("アンロック失敗:", err);
+        });
+      }
+    }, { once: true });
 
     // カメラ起動・エラーの判定
     sceneEl.addEventListener("arReady", () => {
-      statusEl.textContent = "カメラ起動成功！マーカーをかざしてください";
-      statusEl.className = "success";
+      if (!isVideoUnlocked) {
+        statusEl.textContent = "カメラ起動成功！画面をタップしてからマーカーをかざしてください";
+      }
     });
 
     sceneEl.addEventListener("arError", () => {
@@ -87,37 +104,45 @@
       statusEl.className = "error";
     });
 
-    // マーカーを検出したとき（初回の1回、または認識時）
+    // マーカーを検出したとき
     targetEntity.addEventListener('targetFound', () => {
-      statusEl.textContent = "認識成功！動画再生中（マーカーなしでも継続）";
+      statusEl.textContent = "認識成功！動画再生中（マーカーを離しても継続）";
       statusEl.className = 'success';
 
-      // 動画の確実な再生
+      // 動画を確実に再生
       videoEl.play().catch(error => {
-        console.log("自動再生がブロックされました:", error);
+        console.log("再生エラー:", error);
       });
 
-      // 初回検出時に一度だけ、マーカーの追従を外してその場に固定する
-      if (!hasStarted) {
-        hasStarted = true;
+      // 初めてマーカーを読み込んだ瞬間、動画板をシーン直下に移動させて位置を固定する（マーカーを離しても消えなくなる）
+      if (!isLocked) {
+        isLocked = true;
 
-        // 現在のワールド座標・回転・スケールを取得
         const worldPos = new THREE.Vector3();
-        const worldRot = new THREE.Quaternion();
+        const worldQuat = new THREE.Quaternion();
         const worldScale = new THREE.Vector3();
 
         videoPlane.object3D.getWorldPosition(worldPos);
-        videoPlane.object3D.getWorldQuaternion(worldRot);
+        videoPlane.object3D.getWorldQuaternion(worldQuat);
         videoPlane.object3D.getWorldScale(worldScale);
 
-        // マーカー（親要素）から切り離してシーン直下に移動
-        videoPlane.parentNode.removeChild(videoPlane);
+        // 親（ターゲット）から外してシーン直下に配置
         sceneEl.appendChild(videoPlane);
 
-        // 取得したワールド座標を再適用して位置を固定
+        // ワールド座標を再適用してその場に固定
         videoPlane.object3D.position.copy(worldPos);
-        videoPlane.object3D.quaternion.copy(worldRot);
+        videoPlane.object3D.quaternion.copy(worldQuat);
         videoPlane.object3D.scale.copy(worldScale);
+      }
+    });
+
+    // マーカーを見失ったとき（シーン直下に移動済みなので動画は消えず、再生も継続する）
+    targetEntity.addEventListener('targetLost', () => {
+      if (isLocked) {
+        statusEl.textContent = 'マーカーロスト（動画再生継続中）';
+      } else {
+        statusEl.textContent = 'マーカーを検索中...';
+        statusEl.className = '';
       }
     });
 
