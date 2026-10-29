@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>MindAR MP4動画再生（マーカーロスト継続モード）</title>
+  <title>MindAR MP4動画再生（マーカーフリー継続モード）</title>
   <style>
     body {
       margin: 0;
@@ -15,16 +15,18 @@
       position: absolute;
       top: 12px;
       left: 12px;
-      background: rgba(0, 0, 0, 0.8);
+      background: rgba(0, 0, 0, 0.85);
       color: #ffffff;
-      padding: 10px 14px;
+      padding: 12px 16px;
       border-radius: 8px;
-      font-size: 12px;
+      font-size: 13px;
       z-index: 999;
       pointer-events: none;
+      line-height: 1.5;
     }
     #status { font-weight: bold; color: #ffd700; }
     .success { color: #51cf66 !important; }
+    .loading { color: #33afff !important; }
     .error { color: #ff6b6b !important; }
   </style>
 
@@ -34,10 +36,12 @@
 </head>
 <body>
 
-  <!-- 操作ガイドの表示 -->
+  <!-- 操作ガイド・状態表示 -->
   <div id="info-overlay">
-    <div>状態: <span id="status">画面をタップして準備完了してください</span></div>
-    <div style="margin-top: 4px; font-size: 10px; color: #aaa;">2本指ピンチ: 動画の拡大縮小</div>
+    <div>状態: <span id="status" class="loading">準備中...</span></div>
+    <div style="margin-top: 6px; font-size: 11px; color: #aaa;">
+      1本指ドラッグ: 動画を動かす / 2本指ピンチ: 拡大縮小
+    </div>
   </div>
 
   <a-scene 
@@ -46,13 +50,13 @@
     device-orientation-permission-ui="enabled: false">
 
     <a-assets>
-      <!-- MP4動画の読み込み -->
+      <!-- MP4動画の読み込み (スマホ対応のため playsinline, muted を指定) -->
       <video id="vid" src="video.mp4" preload="auto" response-type="arraybuffer" loop crossorigin="anonymous" webkit-playsinline playsinline muted></video>
     </a-assets>
 
     <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
 
-    <!-- マーカーを認識したときに表示されるターゲット -->
+    <!-- マーカーを認識したときに最初に表示されるターゲット位置 -->
     <a-entity id="targetEntity" mindar-image-target="targetIndex: 0">
       <!-- 動画を表示する板 (16:9のアスペクト比: width=1, height=0.5625) -->
       <a-plane 
@@ -74,29 +78,13 @@
     const videoEl = document.querySelector('#vid');
     const targetEntity = document.querySelector('#targetEntity');
 
-    let isVideoUnlocked = false;
-    let isLocked = false;
-
-    // スマホの自動再生ブロックを確実に対策するため、最初の画面タップで動画をアンロック
-    window.addEventListener('click', () => {
-      if (!isVideoUnlocked) {
-        videoEl.play().then(() => {
-          videoEl.pause();
-          videoEl.currentTime = 0;
-          isVideoUnlocked = true;
-          statusEl.textContent = "準備完了！マーカーをかざしてください";
-          statusEl.className = "success";
-        }).catch(err => {
-          console.log("アンロック失敗:", err);
-        });
-      }
-    }, { once: true });
+    let isLoaded = false;
+    let isDetached = false; // マーカーから切り離して空間に固定したかどうか
 
     // カメラ起動・エラーの判定
     sceneEl.addEventListener("arReady", () => {
-      if (!isVideoUnlocked) {
-        statusEl.textContent = "カメラ起動成功！画面をタップしてからマーカーをかざしてください";
-      }
+      statusEl.textContent = "カメラ起動成功！マーカーをかざしてください";
+      statusEl.className = "";
     });
 
     sceneEl.addEventListener("arError", () => {
@@ -104,54 +92,70 @@
       statusEl.className = "error";
     });
 
+    // 動画のロード状態を監視
+    videoEl.addEventListener('loadstart', () => {
+      statusEl.textContent = "動画をロード中...";
+      statusEl.className = "loading";
+    });
+
+    videoEl.addEventListener('canplaythrough', () => {
+      isLoaded = true;
+    });
+
     // マーカーを検出したとき
     targetEntity.addEventListener('targetFound', () => {
-      statusEl.textContent = "認識成功！動画再生中（マーカーを離しても継続）";
+      statusEl.textContent = "認識成功！動画再生中（マーカーフリー継続モード）";
       statusEl.className = 'success';
 
-      // 動画を確実に再生
+      // 動画の再生（確実な起動）
       videoEl.play().catch(error => {
-        console.log("再生エラー:", error);
+        console.log("自動再生がブロックされました:", error);
       });
 
-      // 初めてマーカーを読み込んだ瞬間、動画板をシーン直下に移動させて位置を固定する（マーカーを離しても消えなくなる）
-      if (!isLocked) {
-        isLocked = true;
-
+      // マーカーが外れても動画を消さず、空間に浮かび上がらせて再生を続ける処理
+      if (!isDetached) {
+        // 現在のワールド座標（位置・回転・スケール）を取得
         const worldPos = new THREE.Vector3();
-        const worldQuat = new THREE.Quaternion();
+        const worldRot = new THREE.Quaternion();
         const worldScale = new THREE.Vector3();
-
+        
         videoPlane.object3D.getWorldPosition(worldPos);
-        videoPlane.object3D.getWorldQuaternion(worldQuat);
+        videoPlane.object3D.getWorldQuaternion(worldRot);
         videoPlane.object3D.getWorldScale(worldScale);
 
-        // 親（ターゲット）から外してシーン直下に配置
+        // 親要素（マーカー）から切り離し、シーン直下に移動させる
         sceneEl.appendChild(videoPlane);
 
-        // ワールド座標を再適用してその場に固定
+        // 取得したワールド座標をそのまま再適用して位置を固定
         videoPlane.object3D.position.copy(worldPos);
-        videoPlane.object3D.quaternion.copy(worldQuat);
+        videoPlane.object3D.quaternion.copy(worldRot);
         videoPlane.object3D.scale.copy(worldScale);
+
+        isDetached = true;
       }
     });
 
-    // マーカーを見失ったとき（シーン直下に移動済みなので動画は消えず、再生も継続する）
+    // マーカーを見失っても、すでに独立しているので動画はそのまま再生され続ける
     targetEntity.addEventListener('targetLost', () => {
-      if (isLocked) {
-        statusEl.textContent = 'マーカーロスト（動画再生継続中）';
-      } else {
-        statusEl.textContent = 'マーカーを検索中...';
-        statusEl.className = '';
+      if (isDetached) {
+        statusEl.textContent = '再生中（マーカーなし・自由に操作可能）';
+        statusEl.className = 'success';
       }
     });
 
-    // ピンチイン・ピンチアウト（拡大縮小）の処理
+    // ==========================================
+    // タッチ操作（1本指スライド移動 & 2本指ピンチ拡大縮小）
+    // ==========================================
+    let touchStartX = 0;
+    let touchStartY = 0;
     let initialDistance = null;
     let initialScale = 1;
 
     window.addEventListener('touchstart', (e) => {
-      if (e.touches.length === 2) {
+      if (e.touches.length === 1) {
+        touchStartX = e.touches[0].clientX;
+        touchStartY = e.touches[0].clientY;
+      } else if (e.touches.length === 2) {
         initialDistance = Math.hypot(
           e.touches[0].clientX - e.touches[1].clientX,
           e.touches[0].clientY - e.touches[1].clientY
@@ -166,19 +170,46 @@
     window.addEventListener('touchmove', (e) => {
       if (!videoPlane) return;
 
+      // 1本指でのドラッグ移動（スライド操作）
+      if (e.touches.length === 1 && isDetached) {
+        const currentX = e.touches[0].clientX;
+        const currentY = e.touches[0].clientY;
+        const deltaX = (currentX - touchStartX) * 0.002; // 移動感度の調整
+        const deltaY = (currentY - touchStartY) * 0.002;
+
+        // 現在の位置に加算
+        const pos = videoPlane.getAttribute('position');
+        videoPlane.setAttribute('position', {
+          x: pos.x + deltaX,
+          y: pos.y - deltaY, // 画面座標系と3D座標系のY軸反転に対応
+          z: pos.z
+        });
+
+        touchStartX = currentX;
+        touchStartY = currentY;
+      }
+
+      // 2本指でのピンチイン・ピンチアウト（拡大縮小）
       if (e.touches.length === 2 && initialDistance !== null && initialDistance > 0) {
         const currentDistance = Math.hypot(
           e.touches[0].clientX - e.touches[1].clientX,
           e.touches[0].clientY - e.touches[1].clientY
         );
         const factor = currentDistance / initialDistance;
-        let newScale = Math.max(0.2, Math.min(3.0, initialScale * factor));
+        let newScale = Math.max(0.1, Math.min(5.0, initialScale * factor));
         videoPlane.setAttribute('scale', `${newScale} ${newScale} ${newScale}`);
       }
     }, { passive: true });
 
     window.addEventListener('touchend', (e) => {
       initialDistance = null;
+    });
+
+    // ユーザーの画面タッチでも確実に動画再生を許可させるためのフォールバック
+    window.addEventListener('click', () => {
+      if (videoEl.paused && isLoaded) {
+        videoEl.play().catch(e => {});
+      }
     });
   </script>
 </body>
